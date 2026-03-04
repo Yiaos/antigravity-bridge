@@ -1,4 +1,4 @@
-import json,asyncio,websockets,urllib.request,time,threading,re,argparse
+import json,asyncio,websockets,urllib.request,time,threading,re,argparse,uuid
 from http.server import HTTPServer,BaseHTTPRequestHandler
 MODELS=['Gemini 3.1 Pro (High)','Gemini 3.1 Pro (Low)','Gemini 3 Flash','Claude Sonnet 4.6 (Thinking)','Claude Opus 4.6 (Thinking)','GPT-OSS 120B (Medium)']
 PREFIX='[Direct mode] Reply directly and concisely. No task boundaries, no artifacts, no planning mode.\n\n'
@@ -6,7 +6,7 @@ RELOAD_TIMEOUT=15  # seconds to wait for page ready after reload
 
 class Bridge:
     def __init__(s,cdp=9229):
-        s.cdp=cdp;s.lock=threading.Lock();s.model=None;s.mc=0;s.last_result=None;s.cdp_recovering=False
+        s.cdp=cdp;s.lock=threading.Lock();s.model=None;s.mc=0;s.last_result=None;s.cdp_recovering=False;s.tasks={}
         s._start_watchdog()
     def _start_watchdog(s):
         def run():
@@ -48,6 +48,23 @@ class Bridge:
     def clear(s):
         with s.lock:s.mc=0;s.model=None
         return{'status':'ok'}
+    def async_chat(s,p,to=300,m=None):
+        """Start chat in background, return task_id immediately"""
+        tid=str(uuid.uuid4())[:8]
+        s.tasks[tid]={'status':'running','prompt':p[:80],'started':time.time()}
+        def run():
+            try:
+                r=s.chat(p,to,m)
+                s.tasks[tid]=r
+                s.tasks[tid]['task_id']=tid
+            except Exception as e:
+                s.tasks[tid]={'status':'error','error':str(e),'task_id':tid}
+        threading.Thread(target=run,daemon=True).start()
+        return{'status':'accepted','task_id':tid}
+    def get_task(s,tid):
+        t=s.tasks.get(tid)
+        if not t:return{'status':'error','error':'not found'}
+        return t
     def get_result(s):
         return s.last_result or{'status':'none'}
     def switch(s,m):
@@ -245,6 +262,11 @@ b=None
 class H(BaseHTTPRequestHandler):
     def do_POST(s):
         if s.path=='/clear':s._j(200,b.clear());return
+        if s.path=='/async':
+            d=json.loads(s.rfile.read(int(s.headers.get('Content-Length',0))))
+            p=d.get('prompt','');m=d.get('model');to=d.get('timeout',300)
+            ts=time.strftime('%H:%M:%S');print(f'[{ts}] >> [async] {p[:80]}',flush=True)
+            s._j(200,b.async_chat(p,to,m));return
         d=json.loads(s.rfile.read(int(s.headers.get('Content-Length',0))))
         if s.path=='/chat':
             p=d.get('prompt','');m=d.get('model');to=d.get('timeout',180)
@@ -264,7 +286,10 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:s._j(500,{'error':str(e),'status':'error'})
         else:s.send_response(404);s.end_headers()
     def do_GET(s):
-        if s.path=='/result':s._j(200,b.get_result())
+        if s.path.startswith('/task/'):
+            tid=s.path.split('/')[-1]
+            s._j(200,b.get_task(tid))
+        elif s.path=='/result':s._j(200,b.get_result())
         elif s.path=='/health':
             try:
                 t=json.loads(urllib.request.urlopen(f'http://127.0.0.1:{b.cdp}/json/list',timeout=5).read())
@@ -295,5 +320,5 @@ class ThreadedHTTPServer(ThreadingMixIn,HTTPServer):daemon_threads=True
 if __name__=='__main__':
     pa=argparse.ArgumentParser();pa.add_argument('--port',type=int,default=19999);pa.add_argument('--cdp-port',type=int,default=9229)
     a=pa.parse_args();b=Bridge(a.cdp_port)
-    print(f'AG Bridge v11 :{a.port}',flush=True)
+    print(f'AG Bridge v12 :{a.port}',flush=True)
     ThreadedHTTPServer(('0.0.0.0',a.port),H).serve_forever()
