@@ -1,72 +1,40 @@
 import json,asyncio,websockets,urllib.request,time,threading,re,argparse,uuid
 from http.server import HTTPServer,BaseHTTPRequestHandler
+from urllib.parse import urlparse,parse_qs
+from collections import OrderedDict
+# NOTE: Do NOT set Origin header for websockets — Electron rejects non-whitelisted origins
+# but accepts connections with NO Origin header at all.
 MODELS=['Gemini 3.1 Pro (High)','Gemini 3.1 Pro (Low)','Gemini 3 Flash','Claude Sonnet 4.6 (Thinking)','Claude Opus 4.6 (Thinking)','GPT-OSS 120B (Medium)']
-PREFIX='[Direct mode] Reply directly and concisely. No task boundaries, no artifacts, no planning mode.\n\n'
+PREFIX=''
 RELOAD_TIMEOUT=15  # seconds to wait for page ready after reload
 
+# --- Async task store ---
+_tasks=OrderedDict();_tlock=threading.Lock();_TMAX=50
+def _tadd(tid,kind):
+    with _tlock:
+        if len(_tasks)>=_TMAX:_tasks.popitem(last=False)
+        _tasks[tid]={'id':tid,'kind':kind,'status':'running','result':None,'error':None,'created':time.time()}
+def _tdone(tid,r):
+    with _tlock:
+        if tid in _tasks:_tasks[tid]['status']='ok';_tasks[tid]['result']=r
+def _tfail(tid,e):
+    with _tlock:
+        if tid in _tasks:_tasks[tid]['status']='error';_tasks[tid]['error']=str(e)
+def _tget(tid):
+    with _tlock:return _tasks.get(tid)
+
 class Bridge:
-    def __init__(s,cdp=9229):
-        s.cdp=cdp;s.lock=threading.Lock();s.model=None;s.mc=0;s.last_result=None;s.cdp_recovering=False;s.tasks={}
-        s._start_watchdog()
-    def _start_watchdog(s):
-        def run():
-            fails=0
-            while True:
-                time.sleep(60)
-                try:
-                    t=json.loads(urllib.request.urlopen(f'http://127.0.0.1:{s.cdp}/json/list',timeout=5).read())
-                    ok=any(x.get('title') in ('Antigravity','Task') or 'workbench.html' in x.get('url','') for x in t)
-                    if ok:
-                        if s.cdp_recovering:
-                            try:
-                                with s.lock:asyncio.run(s._reload())
-                            except:pass
-                            s.cdp_recovering=False
-                        fails=0
-                    else:fails+=1
-                except:fails+=1
-                if fails>=3 and not s.cdp_recovering:s.cdp_recovering=True;print('[WATCHDOG] CDP recovering',flush=True)
-        threading.Thread(target=run,daemon=True).start()
+    def __init__(s,cdp=9229):s.cdp=cdp;s.lock=threading.Lock();s.model='Claude Opus 4.6 (Thinking)';s.mc=0
     def _ws(s):
-        last_err=None
-        for i in range(3):
-            try:
-                t=json.loads(urllib.request.urlopen(f'http://127.0.0.1:{s.cdp}/json/list',timeout=5).read())
-                a=[x for x in t if x.get('title') in ('Antigravity','Task')]
-                if not a:a=[x for x in t if 'workbench.html' in x.get('url','')]
-                if not a:raise Exception('No Antigravity')
-                return a[0]['webSocketDebuggerUrl']
-            except Exception as e:
-                last_err=e
-                if i<2:time.sleep([2,4,8][i])
-        raise last_err
-    def chat(s,p,to=120,m=None):
-        with s.lock:
-            r=asyncio.run(s._chat(p,to,m))
-            s.last_result=r
-            return r
-    def clear(s):
-        with s.lock:s.mc=0;s.model=None
-        return{'status':'ok'}
-    def async_chat(s,p,to=300,m=None):
-        """Start chat in background, return task_id immediately"""
-        tid=str(uuid.uuid4())[:8]
-        s.tasks[tid]={'status':'running','prompt':p[:80],'started':time.time()}
-        def run():
-            try:
-                r=s.chat(p,to,m)
-                s.tasks[tid]=r
-                s.tasks[tid]['task_id']=tid
-            except Exception as e:
-                s.tasks[tid]={'status':'error','error':str(e),'task_id':tid}
-        threading.Thread(target=run,daemon=True).start()
-        return{'status':'accepted','task_id':tid}
-    def get_task(s,tid):
-        t=s.tasks.get(tid)
-        if not t:return{'status':'error','error':'not found'}
-        return t
-    def get_result(s):
-        return s.last_result or{'status':'none'}
+        t=json.loads(urllib.request.urlopen(f'http://127.0.0.1:{s.cdp}/json/list',timeout=5).read())
+        # 优先匹配主 workbench（排除 Launchpad/jetski-agent 页面）
+        a=[x for x in t if 'workbench.html' in x.get('url','') and 'jetski' not in x.get('url','')]
+        if not a:a=[x for x in t if x.get('title') in ('Antigravity','Task')]
+        if not a:a=[x for x in t if 'workbench' in x.get('url','')]
+        if not a:raise Exception('No Antigravity')
+        return a[0]['webSocketDebuggerUrl']
+    def chat(s,p,to=300,m=None):
+        with s.lock:return asyncio.run(s._chat(p,to,m))
     def switch(s,m):
         with s.lock:return asyncio.run(s._sw(m))
     def new_chat(s):
@@ -126,16 +94,34 @@ class Bridge:
                         return{'status':'ok','image':b64,'count':count}
             await asyncio.sleep(3)
         return{'status':'error','error':'extract timeout'}
+    async def _ssl_fix(s,ws,mid):
+        """Enable Security domain + ignore self-signed SSL cert"""
+        for method in ['Security.enable','Security.setIgnoreCertificateErrors']:
+            mid[0]+=1;params={'ignore':True} if 'Ignore' in method else {}
+            await ws.send(json.dumps({'id':mid[0],'method':method,'params':params}))
+            try:await asyncio.wait_for(ws.recv(),timeout=3)
+            except:pass
     async def _reload(s):
-        """Reload Antigravity chat page with timeout guard — fixes hang bug"""
+        """Reload Antigravity chat page — reconnects to new page after reload"""
         try:
+            # Phase 1: trigger reload on current connection
             async with websockets.connect(s._ws(),max_size=10*1024*1024,open_timeout=10) as ws:
                 mid=[0]
+                await s._ssl_fix(ws,mid)
                 await s._e(ws,mid,'location.reload()')
-                await asyncio.sleep(2)
-                ready=await s._wait_ready(ws,mid,timeout=RELOAD_TIMEOUT)
-                s.mc=0
-                return{'status':'ok','method':'reload','ready':ready}
+            # Phase 2: wait for page to reload, then reconnect (page ID may change)
+            await asyncio.sleep(3)
+            for attempt in range(5):
+                try:
+                    async with websockets.connect(s._ws(),max_size=10*1024*1024,open_timeout=10) as ws2:
+                        mid2=[0]
+                        await s._ssl_fix(ws2,mid2)
+                        ready=await s._wait_ready(ws2,mid2,timeout=RELOAD_TIMEOUT)
+                        s.mc=0
+                        return{'status':'ok','method':'reload','ready':ready}
+                except Exception:
+                    await asyncio.sleep(2)
+            return{'status':'error','error':'reload reconnect failed'}
         except asyncio.TimeoutError:
             return{'status':'error','error':'reload timeout'}
         except Exception as e:
@@ -155,19 +141,10 @@ class Bridge:
             try:
                 result=await s._do_chat(prompt,timeout,model)
                 if result.get('status')=='ok':return result
-                if result.get('status') in ('high_traffic','agent_error'):
-                    fb=FALLBACK_CHAIN.get(model or s.model or '')
-                    if fb:print(f'[FALLBACK] -> {fb}',flush=True);model=fb;continue
-                    return result
+                if result.get('status')=='high_traffic':return result
                 # error => reload and retry (with timeout guard)
                 if attempt<2:
-                    try:
-                        async with websockets.connect(s._ws(),max_size=10*1024*1024,open_timeout=10) as ws:
-                            mid=[0]
-                            await s._e(ws,mid,'location.reload()')
-                            await asyncio.sleep(2)
-                            await s._wait_ready(ws,mid,timeout=RELOAD_TIMEOUT)
-                            s.mc=0
+                    try:await s._reload()
                     except Exception:pass
                     continue
                 return result
@@ -175,12 +152,45 @@ class Bridge:
                 if attempt<2:await asyncio.sleep(2);continue
                 return{'error':str(e),'status':'error'}
         return{'error':'max retries','status':'error'}
+    async def _ensure_fast_mode(s,ws,mid):
+        """确保切换到 Fast 模式，避免 Planning 模式卡死"""
+        ev=lambda js:s._e(ws,mid,js)
+        # 检查当前模式
+        current=await ev("""(()=>{
+            const btns=[...document.querySelectorAll('button')];
+            const mode=btns.find(b=>b.textContent.trim()==='Fast'||b.textContent.trim()==='Planning');
+            return mode?mode.textContent.trim():'';
+        })()""")
+        if str(current)=='Fast':return True
+        # 点击模式按钮打开下拉
+        await ev("""(()=>{
+            const btns=[...document.querySelectorAll('button')];
+            const mode=btns.find(b=>b.textContent.trim()==='Planning'||b.textContent.trim()==='Fast');
+            if(mode){mode.click();return'OK';}
+            return'NO';
+        })()""")
+        await asyncio.sleep(0.3)
+        # 点击 Fast 选项
+        r=await ev("""(()=>{
+            const items=[...document.querySelectorAll('*')];
+            for(const e of items){
+                if(e.textContent.trim()==='Fast'&&e.childElementCount===0){
+                    e.click();return'OK';
+                }
+            }
+            return'NO';
+        })()""")
+        await asyncio.sleep(0.3)
+        return 'OK' in str(r)
     async def _do_chat(s,prompt,timeout,model):
         async with websockets.connect(s._ws(),max_size=10*1024*1024,open_timeout=10) as ws:
             mid=[0];ev=lambda js:s._e(ws,mid,js)
+            await s._ssl_fix(ws,mid)
             # Wait for page ready
             if not await s._wait_ready(ws,mid,timeout=10):
                 return{'error':'page not ready','status':'error'}
+            # Ensure Fast mode
+            await s._ensure_fast_mode(ws,mid)
             # Switch model
             if model and model!=s.model:
                 await ev(r"""(()=>{const ss=document.querySelectorAll('span');for(const x of ss){if(x.className.includes('select-none')&&x.className.includes('min-w-0')){const p=x.parentElement;if(p){p.click();return'OK'}}}return'NO'})()""")
@@ -188,31 +198,33 @@ class Bridge:
                 safe=model.replace("'","\\'")
                 await ev(f"""(()=>{{const a=document.querySelectorAll('*');for(const e of a){{if(e.childElementCount===0&&e.textContent.trim()==='{safe}'){{let t=e;for(let i=0;i<5;i++){{const c=(t.className||'');if(c.includes('cursor-pointer')||c.includes('hover:')||c.includes('px-2')){{t.click();return'OK'}}t=t.parentElement;if(!t)break}}e.click();return'OK'}}}}return'NO'}})()""")
                 await asyncio.sleep(0.5);s.model=model
-            # Auto reload every 10 msgs (with timeout guard)
+            # Auto reload every 10 msgs — close current WS, reload, then recurse
             s.mc+=1
             if s.mc>10:
-                try:
-                    await ev('location.reload()')
-                    await asyncio.sleep(2)
-                    await s._wait_ready(ws,mid,timeout=RELOAD_TIMEOUT)
+                try:await ev('location.reload()')
                 except Exception:pass
                 s.mc=1
+                await asyncio.sleep(3)
                 return await s._do_chat(prompt,timeout,model)
             # Full prompt
             full=PREFIX+prompt
             safe=full.replace('\\','\\\\').replace("'","\\'")
             safe=safe.replace('\n','\\n').replace('\r','')
-            r=await ev(f"""(()=>{{const d=document.querySelector('div[role="textbox"][contenteditable="true"]');if(!d)return'NO';d.focus();d.textContent='';document.execCommand('insertText',false,'{safe}');return'OK'}})()""")
+            r=await ev(f"""(()=>{{const d=document.querySelector('div[role="textbox"][contenteditable="true"]')||document.querySelector('[data-lexical-editor="true"]');if(!d)return'NO';d.focus();document.execCommand('selectAll');document.execCommand('delete');document.execCommand('insertText',false,'{safe}');return'OK'}})()""")
             if str(r)!='OK':return{'error':f'type:{r}','status':'error'}
             await asyncio.sleep(0.3)
-            # 优先找 Send 按钮，找不到就用 Enter 键发送
+            # 优先找 Send 按钮，找不到就用 CDP Input.dispatchKeyEvent Enter
             r=await ev("""(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='Send');if(b&&!b.disabled){b.click();return'OK_BTN';}return'NO';})()""")
             if 'OK' not in str(r):
-                # 用 Enter 键发送（Antigravity 支持 Enter 发送）
-                r=await ev("""(()=>{const d=document.querySelector('div[role="textbox"][contenteditable="true"]');if(!d)return'NO_INPUT';d.focus();const e=new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,bubbles:true});d.dispatchEvent(e);return'OK_ENTER';})()""")
+                # CDP Input.dispatchKeyEvent — 比 JS KeyboardEvent 更底层，Lexical 能识别
+                mid[0]+=1;await ws.send(json.dumps({'id':mid[0],'method':'Input.dispatchKeyEvent','params':{'type':'keyDown','key':'Enter','code':'Enter','windowsVirtualKeyCode':13,'nativeVirtualKeyCode':13}}))
+                await asyncio.wait_for(ws.recv(),timeout=5)
+                mid[0]+=1;await ws.send(json.dumps({'id':mid[0],'method':'Input.dispatchKeyEvent','params':{'type':'keyUp','key':'Enter','code':'Enter','windowsVirtualKeyCode':13,'nativeVirtualKeyCode':13}}))
+                await asyncio.wait_for(ws.recv(),timeout=5)
+                r='OK_CDP_ENTER'
             if 'OK' not in str(r):return{'error':f'send:{r}','status':'error'}
             # Poll
-            start=time.time();marker=prompt[:60]
+            start=time.time();marker=prompt[:60];planning_detected=False
             while time.time()-start<timeout:
                 await asyncio.sleep(2)
                 body=str(await ev('document.body.innerText'))
@@ -223,6 +235,28 @@ class Bridge:
                 has_done='Good\nBad' in after
                 has_traffic='high traffic' in after
                 has_err='Agent execution terminated' in after or 'Agent terminated' in after
+                # 检测 Planning 模式
+                has_planning='Planning' in body or 'Task' in body or 'Executing' in body
+                if has_planning and not planning_detected:
+                    planning_detected=True
+                    # 尝试提取 Planning 结果
+                    plan_text=await ev("""(()=>{
+                        const els=[...document.querySelectorAll('*')];
+                        for(const e of els){
+                            const txt=e.textContent||'';
+                            if((txt.includes('Planning')||txt.includes('Task'))&&txt.length>100){
+                                return txt;
+                            }
+                        }
+                        return'';
+                    })()""")
+                    if plan_text and len(str(plan_text))>50:
+                        # 等待 Planning 完成
+                        await asyncio.sleep(3)
+                        continue
+                    else:
+                        # 无法提取，快速失败
+                        return{'error':'Planning mode detected but cannot extract result','status':'planning_error','elapsed':round(time.time()-start,1)}
                 if has_done and has_traffic:return{'response':'Server high traffic','elapsed':round(time.time()-start,1),'model':s.model or'?','status':'high_traffic'}
                 if has_err and has_done:return{'error':'agent_error','status':'agent_error','elapsed':round(time.time()-start,1)}
                 if has_done and not has_gen:
@@ -261,12 +295,6 @@ class Bridge:
 b=None
 class H(BaseHTTPRequestHandler):
     def do_POST(s):
-        if s.path=='/clear':s._j(200,b.clear());return
-        if s.path=='/async':
-            d=json.loads(s.rfile.read(int(s.headers.get('Content-Length',0))))
-            p=d.get('prompt','');m=d.get('model');to=d.get('timeout',300)
-            ts=time.strftime('%H:%M:%S');print(f'[{ts}] >> [async] {p[:80]}',flush=True)
-            s._j(200,b.async_chat(p,to,m));return
         d=json.loads(s.rfile.read(int(s.headers.get('Content-Length',0))))
         if s.path=='/chat':
             p=d.get('prompt','');m=d.get('model');to=d.get('timeout',180)
@@ -281,20 +309,25 @@ class H(BaseHTTPRequestHandler):
             else:
                 try:s._j(200,b.switch(mn))
                 except Exception as e:s._j(500,{'error':str(e),'status':'error'})
+        elif s.path=='/async':
+            p=d.get('prompt','');m=d.get('model');to=d.get('timeout',600)
+            tid=uuid.uuid4().hex[:12];_tadd(tid,'chat')
+            ts=time.strftime('%H:%M:%S');print(f'[{ts}] >> [async:{tid}] {p[:80]}',flush=True)
+            def _run():
+                try:r=b.chat(p,to,m);_tdone(tid,r)
+                except Exception as e:_tfail(tid,e)
+            threading.Thread(target=_run,daemon=True).start()
+            s._j(200,{'status':'accepted','task_id':tid})
         elif s.path=='/new':
             try:s._j(200,b.new_chat())
             except Exception as e:s._j(500,{'error':str(e),'status':'error'})
         else:s.send_response(404);s.end_headers()
     def do_GET(s):
-        if s.path.startswith('/task/'):
-            tid=s.path.split('/')[-1]
-            s._j(200,b.get_task(tid))
-        elif s.path=='/result':s._j(200,b.get_result())
-        elif s.path=='/health':
+        if s.path=='/health':
             try:
                 t=json.loads(urllib.request.urlopen(f'http://127.0.0.1:{b.cdp}/json/list',timeout=5).read())
                 ok=any(x.get('title') in ('Antigravity','Task') or 'workbench.html' in x.get('url','') for x in t)
-                s._j(200,{'status':'cdp_recovering' if b.cdp_recovering else ('ok' if ok else 'no_target'),'model':b.model,'msgs':b.mc,'version':'v12'})
+                s._j(200,{'status':'ok' if ok else 'no_target','model':b.model,'msgs':b.mc,'version':'v16'})
             except:s._j(200,{'status':'cdp_down'})
         elif s.path=='/models':s._j(200,{'models':MODELS,'current':b.model})
         elif s.path=='/imgcount':
@@ -303,9 +336,21 @@ class H(BaseHTTPRequestHandler):
                 result=asyncio.run(b._get_img_count())
                 s._j(200,result)
             except Exception as e:s._j(500,{'error':str(e),'status':'error'})
+        elif s.path=='/history':
+            try:
+                async def _h():
+                    async with websockets.connect(b._ws(),max_size=10*1024*1024,open_timeout=10) as ws:
+                        mid=[0];body=str(await b._e(ws,mid,'document.body.innerText'))
+                        return{'status':'ok','content':b._clean(body),'raw_length':len(body)}
+                s._j(200,asyncio.run(_h()))
+            except Exception as e:s._j(500,{'error':str(e),'status':'error'})
+        elif s.path.startswith('/task/'):
+            tid=s.path.split('/task/',1)[1].strip('/')
+            t=_tget(tid)
+            if not t:s._j(404,{'error':'not found','status':'error'})
+            else:s._j(200,t)
         elif s.path.startswith('/extract'):
             # 提取最新生成的图片（不加锁，避免和 /chat 死锁）
-            from urllib.parse import urlparse,parse_qs
             qs=parse_qs(urlparse(s.path).query)
             after=int(qs.get('after',['0'])[0])
             try:
@@ -320,5 +365,5 @@ class ThreadedHTTPServer(ThreadingMixIn,HTTPServer):daemon_threads=True
 if __name__=='__main__':
     pa=argparse.ArgumentParser();pa.add_argument('--port',type=int,default=19999);pa.add_argument('--cdp-port',type=int,default=9229)
     a=pa.parse_args();b=Bridge(a.cdp_port)
-    print(f'AG Bridge v12 :{a.port}',flush=True)
+    print(f'AG Bridge v16 :{a.port}',flush=True)
     ThreadedHTTPServer(('0.0.0.0',a.port),H).serve_forever()

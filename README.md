@@ -1,170 +1,158 @@
-# Antigravity Bridge
+<div align="center">
 
-Turn [Antigravity](https://antigravity.com) — a free AI desktop app for macOS — into a REST API via Chrome DevTools Protocol (CDP).
+# 🌉 Antigravity Bridge
 
-## What is Antigravity?
+**Turn Google's free Antigravity IDE into a REST API — access Claude Opus 4.6, Gemini 3.1 Pro, and more for free**
 
-Antigravity is a free AI desktop application for macOS that provides access to multiple AI models including:
-- Claude Opus 4.6
-- Claude Sonnet 4.6
-- Gemini 3.1 Pro
-- Gemini 3 Flash
-- GPT-OSS 120B
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
+[![Version](https://img.shields.io/badge/Version-1.3.0-green.svg)](CHANGELOG.md)
 
-## What does this tool do?
+*6 free AI models · REST API · Sync & async chat · Image generation*
 
-This bridge exposes Antigravity's AI chat capabilities as REST API endpoints, allowing you to:
-- Query AI models via simple HTTP requests
-- Switch between different AI models
-- Trigger IDE agent tasks remotely via SSH + CDP injection
+</div>
 
-## Prerequisites
+---
 
-1. **Mac with Antigravity installed**
-   - Download from https://antigravity.com
-   
-2. **Remote Login enabled on Mac**
-   - System Settings → General → Sharing → Remote Login
-   
-3. **Python dependencies** (for Bridge API):
-   ```bash
-   pip install websockets
-   ```
+## 😡 The Problem
 
-4. **Node.js with ws package** (for IDE Agent):
-   ```bash
-   npm install -g ws
-   ```
+> "Opus 4.6 API costs hundreds per month"
+> "Gemini 3.1 Pro is free but has no convenient API"
+> "I want my agent to use multiple models without paying for each"
 
-## Quick Start
+**Antigravity Bridge** wraps [Antigravity](https://antigravity.com) — a free AI desktop app by Google — into a standard REST API via Chrome DevTools Protocol (CDP). One endpoint, six free models.
 
-### 1. Start Antigravity with CDP debugging
+## 🚀 Quick Start
+
+### 1. Install & Start
 
 ```bash
-# Option A: Use the startup script
+# Install Antigravity from https://antigravity.com (macOS only)
+
+# Clone this repo
+git clone https://github.com/ythx-101/antigravity-bridge.git
+cd antigravity-bridge
+
+# Install dependency
+pip install websockets
+
+# Start Antigravity with CDP
 bash scripts/start_antigravity.sh
 
-# Option B: Manual start
-open -a Antigravity --args --remote-debugging-port=9229
-python3 scripts/bridge.py --port 19999 --cdp-port 9229
+# Start the bridge
+python3 scripts/bridge.py
 ```
 
 ### 2. Use the API
 
 ```bash
-# Health check
-curl http://localhost:19999/health
-
-# List available models
-curl http://localhost:19999/models
-
-# Send a chat request
+# Chat with Opus (free!)
 curl -X POST http://localhost:19999/chat \
   -H 'Content-Type: application/json' \
-  -d '{"prompt":"Hello, how are you?","model":"Claude Opus 4.6 (Thinking)"}'
+  -d '{"prompt":"Explain quantum computing","model":"Claude Opus 4.6 (Thinking)"}'
 
-# Switch model
-curl -X POST http://localhost:19999/model \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"Gemini 3.1 Pro (High)"}'
+# Async mode (recommended for long tasks)
+curl -X POST http://localhost:19999/async \
+  -d '{"prompt":"Deep analysis...","timeout":600}'
+# → {"status":"accepted","task_id":"abc123"}
+curl http://localhost:19999/task/abc123
+
+# New conversation (clear context)
+curl -X POST http://localhost:19999/new
+
+# Health check
+curl http://localhost:19999/health
 ```
 
-### 3. Use the CLI
+## 🤖 Available Models
 
-```bash
-# Add to PATH or use full path
-export PATH="$PATH:/path/to/antigravity-bridge/scripts"
+| Model | Key | Best For |
+|-------|-----|----------|
+| Claude Opus 4.6 (Thinking) | `Claude Opus 4.6 (Thinking)` | Deep reasoning |
+| Gemini 3.1 Pro (High) | `Gemini 3.1 Pro (High)` | Fast + image gen |
+| Claude Sonnet 4.6 (Thinking) | `Claude Sonnet 4.6 (Thinking)` | Balanced |
+| Gemini 3 Flash | `Gemini 3 Flash` | Fastest |
+| GPT-OSS 120B (Medium) | `GPT-OSS 120B (Medium)` | GPT alternative |
+| Gemini 3.1 Pro (Low) | `Gemini 3.1 Pro (Low)` | Quota-friendly |
 
-# Simple query
-ag "Your question"
+## 📡 API Reference
 
-# Specify model
-ag "Your question" opus
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/chat` | Synchronous chat (default 180s timeout) |
+| POST | `/async` | Async chat, returns `task_id` |
+| GET | `/task/{id}` | Poll async result |
+| POST | `/new` | New conversation (two-phase reload) |
+| POST | `/model` | Switch model |
+| GET | `/health` | Health check |
+| GET | `/models` | List available models |
+| GET | `/history` | Current conversation content |
+| GET | `/imgcount` | Count generated images |
+| GET | `/extract?after=N` | Extract generated image as base64 |
 
-# With custom timeout
-ag "Your question" gemini 300
-```
-
-### 4. IDE Agent Mode (remote)
-
-```bash
-# Trigger agent task on remote Mac
-bash scripts/agy_invoke.sh "Fix the bug in common.sh" --model sonnet
-```
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check, returns connection status |
-| `/models` | GET | List available models |
-| `/chat` | POST | Send a chat request |
-| `/model` | POST | Switch current model |
-| `/new` | POST | Start a new chat (clear context) |
-
-### `/chat` Request
-
-```json
-{
-  "prompt": "Your question",
-  "model": "Claude Opus 4.6 (Thinking)",  // optional
-  "timeout": 180                           // optional, seconds
-}
-```
-
-### `/chat` Response
-
-```json
-{
-  "status": "ok",
-  "response": "AI response text",
-  "model": "Claude Opus 4.6 (Thinking)",
-  "elapsed": 5.2
-}
-```
-
-## Configuration
-
-| Parameter | Env Variable | Default | Description |
-|-----------|--------------|---------|-------------|
-| `--port` | `AG_BRIDGE_PORT` | 19999 | Bridge server port |
-| `--cdp-port` | `AG_CDP_PORT` | 9229 | Antigravity CDP port |
-| Host | `AG_BRIDGE_HOST` | localhost | Bridge server host |
-
-## Architecture
+## 📊 Architecture
 
 ```
-┌─────────────┐         CDP (9229)         ┌─────────────────┐
-│   Your App  │ ─────────────────────────►  │   Antigravity   │
-│   (curl)    │                            │   (Mac)         │
-└─────────────┘                            └─────────────────┘
-       │
-       │ HTTP (19999)
-       ▼
-┌─────────────┐
-│  bridge.py  │  ◄── WebSocket ──► CDP
-│  (Mac)      │
-└─────────────┘
+Your Agent / Script
+    │
+    ├── curl http://localhost:19999/chat
+    │
+    └── bridge.py (:19999)
+          │ WebSocket (CDP)
+          ▼
+        Antigravity (CDP :9229)
+          │ Security.setIgnoreCertificateErrors ← v1.3.0 fix
+          ▼
+        language_server_macos_arm
+          │ gRPC over TLS
+          ▼
+        googleapis.com (AI models)
 ```
 
-## Troubleshooting
+## 🔧 How It Works
 
-### "No Antigravity" error
-- Ensure Antigravity is running
-- Check CDP port: `curl http://localhost:9229/json/list`
+1. **Antigravity** runs with `--remote-debugging-port=9229` (auto-configured via `argv.json`)
+2. **bridge.py** connects via CDP WebSocket to the Antigravity chat UI
+3. Messages are injected into the Lexical editor via `document.execCommand('insertText')`
+4. Responses are polled from the DOM until completion markers appear
+5. **SSL Fix**: Antigravity's `language_server` uses a self-signed cert (`CN=localhost`). The bridge calls `Security.setIgnoreCertificateErrors` to allow the renderer's `fetch()` to communicate with it
 
-### "page not ready" error
-- Wait for Antigravity to fully load
-- Dismiss any permission dialogs
+## ⚠️ Known Issues & Solutions
 
-### SSH connection failed (IDE agent mode)
-- Enable Remote Login on Mac
-- Check firewall settings
+### "Messages send but no response" (most common)
+**Root cause**: Electron's `fetch()` rejects the self-signed SSL cert used by `language_server_macos_arm`.
+
+**Fix** (applied in v1.3.0): The bridge automatically calls `Security.setIgnoreCertificateErrors({ignore: true})` before each chat.
+
+### "gRPC connection fails"
+The `language_server` connects to `daily-cloudcode-pa.googleapis.com` via gRPC. If this endpoint is unreachable (e.g., blocked by firewall), models will show as placeholders and won't respond.
+
+**Fix**: Ensure your network can reach `googleapis.com`.
+
+### Planning mode gets stuck
+Some long prompts trigger Antigravity's "Planning" mode which can hang.
+
+**Fix**: The bridge auto-switches to "Fast" mode. Keep prompts concise.
+
+## 📁 Files
+
+```
+antigravity-bridge/
+├── README.md
+├── CHANGELOG.md
+├── LICENSE
+├── SKILL.md
+└── scripts/
+    ├── bridge.py             # REST API server (v1.3.0)
+    └── start_antigravity.sh  # Mac startup helper
+```
+
+## 📝 Requirements
+
+- macOS with [Antigravity](https://antigravity.com) installed
+- Python 3.8+ with `websockets` package
+- Network access to `googleapis.com`
 
 ## License
 
-MIT License - see LICENSE file.
-
-## Disclaimer
-
-This tool is not affiliated with, endorsed by, or associated with Antigravity or its developers. Antigravity is a free product, and this bridge simply provides an API wrapper for its existing functionality.
+MIT
