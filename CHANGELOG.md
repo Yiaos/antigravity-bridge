@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.3.1] - 2026-03-09
+
+### Documentation
+- Add prominent risk warning (CAUTION block) to README — account ban risks, detection methods, safety guidelines
+- Respond to community question about account safety (Issue #1)
+
+### Notes
+- Model switching logic confirmed working in bridge.py
+- The model selector uses DOM inspection: click span.select-none.min-w-0 parent to open dropdown, find model name, click
+
 ## [1.3.0] - 2026-03-09
 
 ### Critical Fix: SSL Certificate

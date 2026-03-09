@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-1.3.0-green.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.3.1-green.svg)](CHANGELOG.md)
 
 *6 free AI models · REST API · Sync & async chat · Image generation*
 
