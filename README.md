@@ -14,6 +14,25 @@
 
 ---
 
+> [!CAUTION]
+> **⚠️ Risk Warning — Read Before Use**
+>
+> This project turns a desktop client into a headless API via CDP injection. This **violates Antigravity's Terms of Service** and carries real risks:
+>
+> - **Account throttling** — Rate limits, degraded responses, shadow-banning
+> - **Account ban** — Your Google account may be suspended, potentially affecting other Google services (GCP, Workspace, Gmail)
+> - **Detection is trivial** — CDP debugger attachment, `Security.setIgnoreCertificateErrors`, and non-human interaction patterns (zero typing delay, no cursor movement) are all easily detectable
+>
+> **Protect yourself:**
+> 1. 🚫 **Never use your primary Google account** — Register a throwaway account
+> 2. 🐢 **Add delays between requests** — Mimic human typing speed, avoid high concurrency
+> 3. 🧪 **Personal research only** — Do not use as a production API or multi-user backend
+> 4. 💀 **Expect breakage** — This is a cat-and-mouse game; the channel can be killed at any time
+>
+> *Use at your own risk. The authors are not responsible for any account actions taken by Google/Antigravity.*
+
+---
+
 ## 😡 The Problem
 
 > "Opus 4.6 API costs hundreds per month"
