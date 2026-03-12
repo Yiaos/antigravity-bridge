@@ -232,7 +232,8 @@ class Bridge:
                 if len(parts)<2:continue
                 after=parts[-1]
                 has_gen='Generating' in after
-                has_done='Good\nBad' in after
+                has_copy='\nCopy' in after or after.strip().endswith('Copy')
+                has_done='Good\nBad' in after or has_copy
                 has_traffic='high traffic' in after
                 has_err='Agent execution terminated' in after or 'Agent terminated' in after
                 # 检测 Planning 模式
@@ -286,6 +287,7 @@ class Bridge:
                 j=raw.find('\n\n',i)
                 raw=raw[:i]+(raw[j+2:] if j>=0 else '')
         raw=re.sub(r'\nGood\nBad\s*','',raw)
+        raw=re.sub(r'(?m)^Copy\s*$','',raw)
         raw=re.sub(r'\n{3,}','\n\n',raw)
         for n in['Agent terminated','See our troubleshooting','Dismiss\nCopy debug','Error\nOur servers','Error\nVerification Required','[Direct mode]']:
             i=raw.find(n)
@@ -363,7 +365,7 @@ class H(BaseHTTPRequestHandler):
 from socketserver import ThreadingMixIn
 class ThreadedHTTPServer(ThreadingMixIn,HTTPServer):daemon_threads=True
 if __name__=='__main__':
-    pa=argparse.ArgumentParser();pa.add_argument('--port',type=int,default=19999);pa.add_argument('--cdp-port',type=int,default=9229)
+    pa=argparse.ArgumentParser();pa.add_argument('--host',default='127.0.0.1');pa.add_argument('--port',type=int,default=19999);pa.add_argument('--cdp-port',type=int,default=9229)
     a=pa.parse_args();b=Bridge(a.cdp_port)
-    print(f'AG Bridge v16 :{a.port}',flush=True)
-    ThreadedHTTPServer(('0.0.0.0',a.port),H).serve_forever()
+    print(f'AG Bridge v16 {a.host}:{a.port}',flush=True)
+    ThreadedHTTPServer((a.host,a.port),H).serve_forever()
