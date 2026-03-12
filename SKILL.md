@@ -5,9 +5,14 @@ description: Bridge Antigravity AI desktop app to REST API
 
 # Antigravity Bridge
 
-Turn Antigravity (free AI desktop app) into a REST API via Chrome DevTools Protocol (CDP).
+This repository now keeps its OpenClaw skill in the repo-managed path:
 
-## Usage
+- Canonical skill dir: `skill/`
+- Workspace entry symlink target: `~/.openclaw/workspace/tools/antigravity-bridge/skill`
+
+If you are wiring this into an OpenClaw workspace, point the workspace skill entry at `skill/` rather than maintaining a separate copy under `workspace/skills/`.
+
+## Bridge usage
 
 ### Mode 1: Bridge API (Q&A)
 ```bash
