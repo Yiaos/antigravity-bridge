@@ -3,8 +3,7 @@ set -euo pipefail
 
 BRIDGE_URL="${AG_BRIDGE_HOST:-http://127.0.0.1:19999}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_DIR="$(cd "$SKILL_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 START_SCRIPT="$REPO_DIR/scripts/start_antigravity.sh"
 TMP_HEALTH="/tmp/antigravity_bridge_skill_health.json"
 TMP_START_LOG="/tmp/antigravity_bridge_skill_start.log"

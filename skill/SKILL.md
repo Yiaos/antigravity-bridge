@@ -15,14 +15,20 @@ Use Antigravity Bridge as an auxiliary local model path, not the primary coding 
 
 ## Workflow
 
+先定义工具根目录（可覆盖，避免硬编码绝对路径）：
+
+```bash
+WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
+```
+
 1. Ensure the local bridge is running:
-   - Run `scripts/ensure-bridge.sh`
+   - Run `bash "$WS/tools/antigravity-bridge/scripts/ensure-bridge.sh"`
 2. For a single prompt:
-   - Run `scripts/ag-chat.sh --model opus "Explain this error"`
+   - Run `bash "$WS/tools/antigravity-bridge/scripts/ag-chat.sh" --model opus "Explain this error"`
 3. To clear context:
-   - Run `scripts/ag-reset.sh`
+   - Run `bash "$WS/tools/antigravity-bridge/scripts/ag-reset.sh"`
 4. To compare two models:
-   - Run `scripts/ag-compare.sh --model-a opus --model-b gemini "Analyze this bug"`
+   - Run `bash "$WS/tools/antigravity-bridge/scripts/ag-compare.sh" --model-a opus --model-b gemini "Analyze this bug"`
 5. Return the result in normal assistant voice
 
 ## Paths

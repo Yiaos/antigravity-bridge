@@ -2,8 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_DIR="$(cd "$SKILL_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BRIDGE_URL="${AG_BRIDGE_HOST:-http://127.0.0.1:19999}"
 MODEL="opus"
 TIMEOUT=180
